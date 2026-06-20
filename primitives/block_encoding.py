@@ -65,6 +65,27 @@ def _principal_sqrt_psd(M: np.ndarray) -> np.ndarray:
     return (V * np.sqrt(w)) @ V.conj().T
 
 
+def _defect_sqrts(A: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Consistent left/right defect square roots for a contraction ``A``.
+
+    If ``A = U S V^dag``, then
+
+        sqrt(I - A A^dag) = U sqrt(I - S^2) U^dag
+        sqrt(I - A^dag A) = V sqrt(I - S^2) V^dag.
+
+    Building both factors from the same SVD preserves the identity
+    ``A sqrt(I-A^dag A) = sqrt(I-AA^dag) A`` much more reliably than taking two
+    independent eigendecompositions, especially after normalisation puts the
+    largest singular value exactly at 1.
+    """
+    U, s, Vh = np.linalg.svd(A, full_matrices=True)
+    defect = np.sqrt(np.clip(1.0 - s * s, 0.0, None))
+    V = Vh.conj().T
+    left = (U * defect) @ U.conj().T
+    right = (V * defect) @ V.conj().T
+    return (left + left.conj().T) / 2.0, (right + right.conj().T) / 2.0
+
+
 def dilation_block_encoding(A: np.ndarray, check: bool = True) -> np.ndarray:
     """One-ancilla unitary dilation of a contraction ``A`` (``||A|| <= 1``).
 
@@ -93,9 +114,7 @@ def dilation_block_encoding(A: np.ndarray, check: bool = True) -> np.ndarray:
             f"||A|| = {smax:.6f} > 1; normalize A first (see normalize_matrix)"
         )
 
-    eye = np.eye(n)
-    top_right = _principal_sqrt_psd(eye - A @ A.conj().T)
-    bot_left = _principal_sqrt_psd(eye - A.conj().T @ A)
+    top_right, bot_left = _defect_sqrts(A)
     U = np.block([[A, top_right], [bot_left, -A.conj().T]])
 
     if check:
