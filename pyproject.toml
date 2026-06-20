@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qsvt-linear-solvers"
+version = "0.1.0"
+description = "QSVT-based quantum linear-equation solvers, from FTQC primitives to Quantinuum hardware."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Monit Sharma" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "scipy>=1.10", "pyqsp>=0.1.6"]
+
+[project.optional-dependencies]
+hardware = [
+    "pytket>=2.0",
+    "qnexus>=0.40",
+    "qiskit>=2.0",
+    "qiskit-ibm-runtime>=0.42",
+]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools]
+packages = ["primitives", "solvers", "applications", "hardware", "benchmarks"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,38 @@
+{
+  "backend": "ibm_kingston",
+  "counts": {
+    "00": 841,
+    "01": 28,
+    "10": 108,
+    "11": 47
+  },
+  "created_utc": "2026-06-20T07:11:17+00:00",
+  "ideal": {
+    "ancilla_success_probability": 0.9357897585325431,
+    "joint_probabilities": {
+      "00": 0.824545626020825,
+      "01": 0.03210512073373159,
+      "10": 0.11124413251171802,
+      "11": 0.03210512073373146
+    },
+    "postselected_system_probabilities": {
+      "0": 0.8811227292269523,
+      "1": 0.11887727077304767
+    },
+    "raw_system_probabilities": {
+      "0": 0.8566507467545567,
+      "1": 0.14334925324544948
+    }
+  },
+  "job_id": "d8r3pvekodhs7383v6ag",
+  "postselected_counts": {
+    "0": 841,
+    "1": 108
+  },
+  "postselected_probabilities": {
+    "0": 0.8861959957850368,
+    "1": 0.11380400421496312
+  },
+  "shots": 1024,
+  "status": "DONE"
+}

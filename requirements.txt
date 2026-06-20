@@ -1,0 +1,23 @@
+# Core numerics (primitives, solver, verification)
+numpy>=1.24
+scipy>=1.10
+
+# Robust symmetric-QSP angle finding + bounded 1/x polynomial (Childs-Kothari-Somma).
+# Used by primitives.qsp_qsvt; the QSVT/block-encoding/solver code itself is local.
+pyqsp>=0.1.6
+
+# Testing
+pytest>=7.0
+
+# Quantinuum hardware path (block-encoding/QSVT circuit compilation + submission)
+# Only needed for the hardware/ runner; the primitives and solver run on numpy alone.
+pytket>=2.0
+qnexus==0.44.0
+# tket lowers pytket -> HUGR for the Helios stack.  Pin tket==0.13.1 so it pulls
+# hugr 0.16 (HUGR envelope v1.0.0); newer tket pulls hugr 0.17 (envelope v1.1.0)
+# which the current Nexus server rejects.  See hardware/quantinuum_runner.py.
+tket==0.13.1
+
+# IBM Quantum hardware path (Runtime Sampler V2)
+qiskit>=2.0
+qiskit-ibm-runtime>=0.42

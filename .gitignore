@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Quantinuum / Nexus auth artifacts (never commit credentials)
+.qnx/
+*.token
+nexus_*.json
+
+# Generated artifacts
+*.png
+!docs/**/*.png
+results/
