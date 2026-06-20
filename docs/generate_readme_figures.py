@@ -1,299 +1,327 @@
-"""Generate README figures for the QSVT linear-solver project."""
+"""Generate the README figures for the QSVT linear-solver project.
+
+Figures are built from two sources:
+
+* ``docs/results/readme_results.json`` -- the captured solver sweeps and the
+  *measured* hardware/emulator counts (these cannot be recomputed, so they are
+  read, never regenerated here).
+* ``primitives.qsp_qsvt`` -- the bounded ``1/x`` polynomial, computed live for
+  the "what QSVT does" illustration.
+
+Run ``python docs/generate_readme_figures.py`` to refresh the PNGs in
+``docs/figures/``.  The data JSON is produced by ``collect_results`` in the
+project history; this script only consumes it.
+"""
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import sys
 from pathlib import Path
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import font_manager  # noqa: F401  (ensures font cache is built)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from hardware.run_ibm import circuit_ideal, demo_problem
-from solvers.hhl_baseline import hhl_solve
-from solvers.qsvt_linear_solver import solve
-
-
 FIG_DIR = ROOT / "docs" / "figures"
-DATA_DIR = ROOT / "docs" / "results"
+DATA = ROOT / "docs" / "results" / "readme_results.json"
+
+# --------------------------------------------------------------------------- #
+# House style
+# --------------------------------------------------------------------------- #
+INK = "#1f2933"          # near-black for text
+MUTED = "#7b8794"        # secondary text / grid
+IDEAL = "#52606d"        # reference (statevector ideal)
+TEAL = "#2a9d8f"         # Quantinuum emulator
+CORAL = "#e8804d"        # Quantinuum hardware
+BLUE = "#3b6fd6"         # IBM hardware
+ACCENT = "#b8002e"       # highlight / error
+
+PLATFORM_COLOR = {
+    "Noiseless circuit ideal": IDEAL,
+    "Quantinuum Helios-1E-lite": TEAL,
+    "Quantinuum Helios-1": CORAL,
+    "IBM Kingston": BLUE,
+}
+SHORT = {
+    "Noiseless circuit ideal": "Noiseless\nideal",
+    "Quantinuum Helios-1E-lite": "Helios-1E-lite\n(emulator)",
+    "Quantinuum Helios-1": "Helios-1\n(hardware)",
+    "IBM Kingston": "IBM Kingston\n(hardware)",
+}
 
 
-def _quiet(fn, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return fn(*args, **kwargs)
+def _apply_style() -> None:
+    mpl.rcParams.update(
+        {
+            "figure.dpi": 200,
+            "savefig.dpi": 200,
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "font.family": "DejaVu Sans",
+            "font.size": 12,
+            "text.color": INK,
+            "axes.edgecolor": "#c9d2dd",
+            "axes.labelcolor": INK,
+            "axes.titlecolor": INK,
+            "axes.linewidth": 1.0,
+            "axes.grid": True,
+            "grid.color": "#e6eaef",
+            "grid.linewidth": 1.0,
+            "xtick.color": MUTED,
+            "ytick.color": MUTED,
+            "xtick.labelcolor": INK,
+            "ytick.labelcolor": INK,
+            "legend.frameon": False,
+        }
+    )
 
 
-def _spd(n: int, seed: int, shift: float = 3.0) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    mat = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
-    return mat @ mat.conj().T + shift * np.eye(n)
-
-
-def _postselected_probs(joint_counts: dict[str, int]) -> dict[str, float]:
-    selected = {"0": 0, "1": 0}
-    for key, count in joint_counts.items():
-        system, ancilla = key[0], key[1]
-        if ancilla == "0":
-            selected[system] += count
-    total = selected["0"] + selected["1"]
-    return {key: value / total for key, value in selected.items()}
-
-
-def collect_results() -> dict:
-    """Collect deterministic simulation metrics and measured hardware data."""
-
-    A = _spd(4, seed=11).real
-    A = (A + A.T) / 2
-    rng = np.random.default_rng(12)
-    b = rng.standard_normal(4)
-
-    qsvt_sweep = []
-    for eps in [0.3, 0.1, 0.03, 0.01, 0.003]:
-        result = _quiet(solve, A, b, epsilon=eps)
-        qsvt_sweep.append(
-            {
-                "epsilon": eps,
-                "degree": result.degree,
-                "residual": result.residual,
-                "success_probability": result.success_probability,
-            }
+def _title(ax, title, subtitle=None):
+    pad = 30 if subtitle else 12
+    ax.set_title(title, fontsize=15, fontweight="bold", pad=pad, loc="left")
+    if subtitle:
+        ax.text(
+            0.0, 1.02, subtitle, transform=ax.transAxes, fontsize=10.5,
+            color=MUTED, ha="left", va="bottom",
         )
 
-    hhl_sweep = []
-    for clock_qubits in range(4, 10):
-        result = hhl_solve(A, b, clock_qubits=clock_qubits)
-        hhl_sweep.append(
-            {
-                "clock_qubits": clock_qubits,
-                "residual": result.residual,
-                "success_probability": result.success_probability,
-            }
-        )
 
-    A_cmp = _spd(4, seed=21).real
-    A_cmp = (A_cmp + A_cmp.T) / 2
-    rng_cmp = np.random.default_rng(22)
-    b_cmp = rng_cmp.standard_normal(4)
-    x_true = np.linalg.solve(A_cmp, b_cmp)
-    qsvt_cmp = _quiet(solve, A_cmp, b_cmp, epsilon=0.01)
-    hhl_cmp = hhl_solve(A_cmp, b_cmp, clock_qubits=9)
-
-    A_hw, b_hw, phis = demo_problem()
-    ideal = circuit_ideal(A_hw, b_hw, phis)
-
-    hardware = {
-        "Noiseless circuit ideal": {
-            "kind": "statevector",
-            "shots": None,
-            "joint_probabilities": ideal.joint_probabilities,
-            "raw_system_probabilities": ideal.raw_system_probabilities,
-            "ancilla_success_probability": ideal.ancilla_success_probability,
-            "postselected_system_probabilities": ideal.postselected_system_probabilities,
-        },
-        "Quantinuum Helios-1E-lite": {
-            "kind": "noisy emulator",
-            "job_id": "65245a1e-20b6-49f3-8265-787684c59298",
-            "result_id": "c5fa1063-a11d-4875-8450-bdfca1cbabe3",
-            "shots": 100,
-            "joint_counts": {"00": 81, "01": 1, "10": 17, "11": 1},
-            "postselected_system_probabilities": _postselected_probs(
-                {"00": 81, "01": 1, "10": 17, "11": 1}
-            ),
-        },
-        "Quantinuum Helios-1": {
-            "kind": "hardware",
-            "job_id": "02e36ce1-cf5b-4510-8f7f-6d9afac3c8bb",
-            "result_id": "f5deb306-1304-4478-ac62-b8b6c587b6f8",
-            "shots": 500,
-            "cost_hqc": 49.61,
-            "joint_counts": {"00": 432, "01": 17, "10": 37, "11": 14},
-            "postselected_system_probabilities": _postselected_probs(
-                {"00": 432, "01": 17, "10": 37, "11": 14}
-            ),
-        },
-        "IBM Kingston": {
-            "kind": "hardware",
-            "job_id": "d8r3pvekodhs7383v6ag",
-            "shots": 1024,
-            "joint_counts": {"00": 841, "01": 28, "10": 108, "11": 47},
-            "postselected_system_probabilities": _postselected_probs(
-                {"00": 841, "01": 28, "10": 108, "11": 47}
-            ),
-        },
-    }
-
-    return {
-        "classical_comparison": {
-            "qsvt": {
-                "epsilon": 0.01,
-                "degree": qsvt_cmp.degree,
-                "kappa": qsvt_cmp.kappa,
-                "residual": qsvt_cmp.residual,
-                "relative_solution_error": float(
-                    np.linalg.norm(qsvt_cmp.x - x_true) / np.linalg.norm(x_true)
-                ),
-                "success_probability": qsvt_cmp.success_probability,
-                "amplification_rounds": qsvt_cmp.amplification_rounds,
-            },
-            "hhl": {
-                "clock_qubits": 9,
-                "residual": hhl_cmp.residual,
-                "relative_solution_error": float(
-                    np.linalg.norm(hhl_cmp.x - x_true) / np.linalg.norm(x_true)
-                ),
-                "success_probability": hhl_cmp.success_probability,
-            },
-        },
-        "qsvt_sweep": qsvt_sweep,
-        "hhl_sweep": hhl_sweep,
-        "hardware": hardware,
-    }
+def _despine(ax, left=False):
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    if not left:
+        ax.spines["left"].set_visible(False)
+        ax.tick_params(axis="y", length=0)
+    ax.tick_params(axis="x", length=0)
 
 
-def plot_solver_convergence(results: dict) -> None:
+def load() -> dict:
+    return json.loads(DATA.read_text())
+
+
+# --------------------------------------------------------------------------- #
+# Figure 1 -- the idea: QSVT applies a bounded polynomial approximation of 1/x
+# --------------------------------------------------------------------------- #
+def fig_polynomial() -> None:
+    from primitives.qsp_qsvt import approximate_inverse
+
+    kappa = 5.0
+    poly = approximate_inverse(kappa, epsilon=0.05)
+    xs = np.linspace(-1, 1, 1600)
+    target = np.where(np.abs(xs) >= 1 / kappa, poly.scale / xs, np.nan)
+    approx = poly(xs)
+
+    fig, ax = plt.subplots(figsize=(9.2, 5.2))
+    # valid spectral bands (where the approximation is trusted)
+    for lo, hi in [(1 / kappa, 1.0), (-1.0, -1 / kappa)]:
+        ax.axvspan(lo, hi, color=TEAL, alpha=0.10, lw=0)
+    ax.axhline(0, color="#c9d2dd", lw=1)
+    for yb in (1.0, -1.0):
+        ax.axhline(yb, color=MUTED, lw=1, ls=(0, (1, 3)), alpha=0.7)
+    ax.text(-0.98, 1.02, r"block-encodable bound  $|P|\leq 1$",
+            color=MUTED, fontsize=9, va="bottom")
+
+    # one polynomial, one target -- the polynomial hugs 1/x inside the bands
+    ax.plot(xs, approx, color=BLUE, lw=2.9, zorder=2,
+            label=f"QSVT polynomial  P(x)   (degree {poly.degree})")
+    ax.plot(xs, target, color=ACCENT, lw=2.4, ls=(0, (6, 3)), zorder=3,
+            label=r"target  $\mathrm{scale}\,/\,x$")
+
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1.2, 1.2)
+    ax.set_xlabel("eigenvalue  x   (normalised spectrum of A)")
+    ax.set_ylabel("polynomial value")
+    ax.text(1 / kappa, -1.13, r"$1/\kappa$", color=TEAL, fontsize=11, ha="center")
+    ax.text(-1 / kappa, -1.13, r"$-1/\kappa$", color=TEAL, fontsize=11, ha="center")
+    ax.text(0.6, -0.5, "approximation\nvalid here", color=TEAL, fontsize=9.5,
+            ha="center", va="center")
+    _despine(ax, left=True)
+    ax.grid(axis="x", visible=False)
+    ax.legend(loc="lower center", fontsize=10.5, ncols=2,
+              bbox_to_anchor=(0.5, -0.30))
+    _title(
+        ax,
+        "QSVT inverts a matrix by approximating 1/x",
+        f"A bounded degree-{poly.degree} polynomial hugs 1/x on the well-conditioned "
+        f"band (kappa = {kappa:.0f}) and stays within +/-1 elsewhere.",
+    )
+    fig.subplots_adjust(top=0.86, bottom=0.22)
+    fig.savefig(FIG_DIR / "qsvt_polynomial.png", bbox_inches="tight")
+    plt.close(fig)
+
+
+# --------------------------------------------------------------------------- #
+# Figure 2 -- classical accuracy: QSVT vs HHL
+# --------------------------------------------------------------------------- #
+def fig_accuracy(results: dict) -> None:
     qsvt = results["qsvt_sweep"]
     hhl = results["hhl_sweep"]
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.2), dpi=180)
-    fig.patch.set_facecolor("white")
+    fig, (axq, axh) = plt.subplots(1, 2, figsize=(11.6, 4.5))
 
-    axes[0].plot(
-        [row["degree"] for row in qsvt],
-        [row["residual"] for row in qsvt],
-        marker="o",
-        linewidth=2.4,
-        color="#2457A6",
-    )
-    axes[0].set_yscale("log")
-    axes[0].set_title("QSVT residual vs polynomial degree")
-    axes[0].set_xlabel("QSVT polynomial degree")
-    axes[0].set_ylabel(r"Relative residual $\|Ax-b\|/\|b\|$")
+    axq.plot([r["degree"] for r in qsvt], [r["residual"] for r in qsvt],
+             marker="o", ms=8, lw=2.6, color=BLUE, mec="white", mew=1.4)
+    axq.set_yscale("log")
+    axq.set_xlabel("QSVT polynomial degree")
+    axq.set_ylabel(r"relative residual  $\|Ax-b\|/\|b\|$")
+    for r in qsvt:
+        axq.annotate(f"{r['residual']:.0e}", (r["degree"], r["residual"]),
+                     textcoords="offset points", xytext=(0, 10),
+                     fontsize=8.5, color=MUTED, ha="center")
+    _title(axq, "QSVT accuracy is tunable",
+           "Higher polynomial degree -> exponentially smaller error.")
 
-    axes[1].plot(
-        [row["clock_qubits"] for row in hhl],
-        [row["residual"] for row in hhl],
-        marker="s",
-        linewidth=2.4,
-        color="#8F3D2E",
-    )
-    axes[1].set_yscale("log")
-    axes[1].set_title("HHL residual vs QPE clock qubits")
-    axes[1].set_xlabel("Clock qubits")
-    axes[1].set_ylabel(r"Relative residual $\|Ax-b\|/\|b\|$")
+    axh.plot([r["clock_qubits"] for r in hhl], [r["residual"] for r in hhl],
+             marker="s", ms=8, lw=2.6, color=CORAL, mec="white", mew=1.4)
+    axh.set_yscale("log")
+    axh.set_xlabel("HHL phase-estimation clock qubits")
+    axh.set_ylabel(r"relative residual  $\|Ax-b\|/\|b\|$")
+    _title(axh, "HHL baseline for comparison",
+           "Accuracy set by QPE resolution; non-monotone on the finite grid.")
 
-    for ax in axes:
-        ax.grid(True, which="major", alpha=0.25)
-        ax.grid(True, which="minor", alpha=0.12)
-        ax.spines[["top", "right"]].set_visible(False)
+    for ax in (axq, axh):
+        _despine(ax, left=True)
+        ax.grid(axis="x", visible=False)
 
-    fig.suptitle("Classical statevector validation on a 4x4 SPD system", y=1.02)
     fig.tight_layout()
     fig.savefig(FIG_DIR / "solver_convergence.png", bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_hardware_postselection(results: dict) -> None:
-    hardware = results["hardware"]
-    labels = list(hardware)
-    p0 = [
-        hardware[label]["postselected_system_probabilities"]["0"]
-        for label in labels
+# --------------------------------------------------------------------------- #
+# Figure 3 -- the headline hardware result (the recovered solution)
+# --------------------------------------------------------------------------- #
+def fig_hardware_solution(results: dict) -> None:
+    hw = results["hardware"]
+    order = [
+        "Noiseless circuit ideal",
+        "Quantinuum Helios-1E-lite",
+        "Quantinuum Helios-1",
+        "IBM Kingston",
     ]
-    p1 = [
-        hardware[label]["postselected_system_probabilities"]["1"]
-        for label in labels
-    ]
+    p1 = [hw[k]["postselected_system_probabilities"]["1"] for k in order]
+    ideal1 = hw["Noiseless circuit ideal"]["postselected_system_probabilities"]["1"]
 
-    display_labels = [
-        "Ideal",
-        "Quantinuum\nHelios-1E-lite",
-        "Quantinuum\nHelios-1",
-        "IBM\nKingston",
-    ]
-    x = np.arange(len(labels))
-    width = 0.34
+    fig, ax = plt.subplots(figsize=(9.6, 5.2))
+    y = np.arange(len(order))[::-1]  # ideal on top
+    ax.set_ylim(-0.8, len(order) - 0.4)
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(10, 4.6), dpi=180)
-    fig.patch.set_facecolor("white")
-    ax.bar(x - width / 2, p0, width, label="system |0>", color="#2457A6")
-    ax.bar(x + width / 2, p1, width, label="system |1>", color="#D39C2F")
-    ax.axhline(
-        hardware["Noiseless circuit ideal"]["postselected_system_probabilities"]["0"],
-        color="#2457A6",
-        linewidth=1.2,
-        linestyle="--",
-        alpha=0.45,
+    # ideal reference band (+/- 2 pp)
+    ax.axvspan((ideal1 - 0.02) * 100, (ideal1 + 0.02) * 100,
+               color=IDEAL, alpha=0.10, lw=0)
+    ax.axvline(ideal1 * 100, color=IDEAL, lw=1.8, ls=(0, (5, 3)), zorder=1)
+    ax.text(ideal1 * 100 + 0.45, -0.72, f"ideal  {ideal1:.1%}",
+            color=IDEAL, fontsize=10, ha="left", va="center")
+
+    for yi, key in zip(y, order):
+        val = hw[key]["postselected_system_probabilities"]["1"] * 100
+        color = PLATFORM_COLOR[key]
+        ax.plot([0, val], [yi, yi], color=color, lw=3, alpha=0.55, zorder=2)
+        ax.scatter([val], [yi], s=170, color=color, zorder=3,
+                   edgecolor="white", linewidth=1.6)
+        delta = (hw[key]["postselected_system_probabilities"]["1"] - ideal1) * 100
+        tag = "" if key == "Noiseless circuit ideal" else f"   (Δ {delta:+.1f} pp)"
+        ax.text(val + 0.4, yi, f"{val:.1f}%{tag}", va="center", fontsize=10.5,
+                color=INK)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([SHORT[k].replace("\n", " ") for k in order], fontsize=11)
+    ax.set_xlim(0, max(p1) * 100 + 7)
+    ax.set_xlabel(r"measured probability of system qubit $=|1\rangle$  "
+                  r"(after ancilla post-selection)")
+    _despine(ax)
+    ax.grid(axis="y", visible=False)
+    _title(
+        ax,
+        "The same solution, recovered on three quantum backends",
+        "Post-selected system-qubit distribution; closer to the dashed ideal is better.",
     )
-    ax.set_ylim(0, 1)
-    ax.set_ylabel("Probability after ancilla=0 post-selection")
-    ax.set_title("Hardware agreement with the QSVT circuit ideal")
-    ax.set_xticks(x)
-    ax.set_xticklabels(display_labels)
-    ax.legend(frameon=False, ncols=2, loc="upper right")
-    ax.spines[["top", "right"]].set_visible(False)
-    for i, value in enumerate(p0):
-        ax.text(i - width / 2, value + 0.025, f"{value:.1%}", ha="center", fontsize=9)
-    for i, value in enumerate(p1):
-        ax.text(i + width / 2, value + 0.025, f"{value:.1%}", ha="center", fontsize=9)
-    fig.tight_layout()
-    fig.savefig(FIG_DIR / "hardware_postselection.png", bbox_inches="tight")
+    fig.subplots_adjust(top=0.84)
+    fig.savefig(FIG_DIR / "hardware_solution.png", bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_joint_counts(results: dict) -> None:
-    hardware = {
-        label: row
-        for label, row in results["hardware"].items()
-        if "joint_counts" in row
-    }
+# --------------------------------------------------------------------------- #
+# Figure 4 -- where the noise shows up (joint-outcome heatmap)
+# --------------------------------------------------------------------------- #
+def fig_hardware_fidelity(results: dict) -> None:
+    hw = results["hardware"]
+    order = [
+        "Noiseless circuit ideal",
+        "Quantinuum Helios-1E-lite",
+        "Quantinuum Helios-1",
+        "IBM Kingston",
+    ]
     bitstrings = ["00", "10", "01", "11"]
-    colors = ["#2457A6", "#D39C2F", "#6BAA75", "#8F3D2E"]
-    labels = list(hardware)
-    display_labels = ["Helios-1E-lite", "Helios-1", "IBM Kingston"]
-    x = np.arange(len(labels))
-    bottom = np.zeros(len(labels))
+    col_titles = [
+        "00\nsolution |0>",
+        "10\nsolution |1>",
+        "01\nancilla leak",
+        "11\nancilla leak",
+    ]
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(9.5, 4.5), dpi=180)
-    fig.patch.set_facecolor("white")
+    def fracs(key):
+        row = hw[key]
+        if "joint_probabilities" in row:
+            return [row["joint_probabilities"][b] for b in bitstrings]
+        shots = row["shots"]
+        return [row["joint_counts"].get(b, 0) / shots for b in bitstrings]
 
-    for bitstring, color in zip(bitstrings, colors):
-        values = [
-            hardware[label]["joint_counts"].get(bitstring, 0) / hardware[label]["shots"]
-            for label in labels
-        ]
-        ax.bar(x, values, bottom=bottom, label=bitstring, color=color)
-        bottom += np.asarray(values)
+    matrix = np.array([fracs(k) for k in order])
 
-    ax.set_ylim(0, 1)
-    ax.set_ylabel("Fraction of shots")
-    ax.set_title("Measured joint outcomes (key order: system, ancilla)")
-    ax.set_xticks(x)
-    ax.set_xticklabels(display_labels)
-    ax.legend(title="bitstring", frameon=False, ncols=4, loc="upper center")
-    ax.spines[["top", "right"]].set_visible(False)
+    fig, ax = plt.subplots(figsize=(9.2, 4.8))
+    # perceptual emphasis on the small (error) outcomes via sqrt scaling
+    shaded = np.sqrt(matrix)
+    im = ax.imshow(shaded, cmap="BuPu", aspect="auto", vmin=0, vmax=1)
+
+    ax.set_xticks(range(len(bitstrings)))
+    ax.set_xticklabels(col_titles, fontsize=10.5)
+    ax.set_yticks(range(len(order)))
+    ax.set_yticklabels([SHORT[k].replace("\n", " ") for k in order], fontsize=10.5)
+    ax.tick_params(length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    for i in range(len(order)):
+        for j in range(len(bitstrings)):
+            v = matrix[i, j]
+            ax.text(j, i, f"{v:.1%}", ha="center", va="center",
+                    fontsize=11, fontweight="bold" if j < 2 else "normal",
+                    color="white" if shaded[i, j] > 0.55 else INK)
+    # separate signal (00/10) from leakage (01/11)
+    ax.axvline(1.5, color="white", lw=4)
+    ax.axvline(1.5, color="#c9d2dd", lw=1.2, ls=(0, (4, 3)))
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+    cbar.set_label("shot fraction (sqrt-scaled)", color=MUTED, fontsize=9.5)
+    cbar.outline.set_visible(False)
+    cbar.ax.tick_params(length=0, labelsize=8.5)
+
+    _title(
+        ax,
+        "Where each device spends its shots",
+        "Left of the divider is the encoded answer; right is ancilla leakage "
+        "(noise). The emulator/hardware concentrate on 00/10, as intended.",
+    )
     fig.tight_layout()
     fig.savefig(FIG_DIR / "hardware_joint_counts.png", bbox_inches="tight")
     plt.close(fig)
 
 
 def main() -> None:
+    _apply_style()
     FIG_DIR.mkdir(parents=True, exist_ok=True)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    results = collect_results()
-    (DATA_DIR / "readme_results.json").write_text(
-        json.dumps(results, indent=2, sort_keys=True) + "\n"
-    )
-    plot_solver_convergence(results)
-    plot_hardware_postselection(results)
-    plot_joint_counts(results)
+    results = load()
+    fig_polynomial()
+    fig_accuracy(results)
+    fig_hardware_solution(results)
+    fig_hardware_fidelity(results)
+    print("wrote figures to", FIG_DIR)
 
 
 if __name__ == "__main__":

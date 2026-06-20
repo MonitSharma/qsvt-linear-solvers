@@ -3,303 +3,231 @@
 [![CI](https://github.com/MonitSharma/qsvt-linear-solvers/actions/workflows/ci.yml/badge.svg)](https://github.com/MonitSharma/qsvt-linear-solvers/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-This repository implements and validates a quantum linear-system solver based on
-**Quantum Singular Value Transformation (QSVT)**.  The project starts from the
-fault-tolerant algorithmic primitives, verifies them against dense classical
-linear algebra, compares the resulting solver with a faithful HHL baseline, and
-then runs the same shallow two-qubit QSVT circuit on two production quantum
-hardware stacks:
+A from-scratch, end-to-end **quantum linear-system solver** built on the
+**Quantum Singular Value Transformation (QSVT)** — and actually run on real
+quantum hardware from **two different vendors**.
 
-- **Quantinuum Nexus / Helios**: `Helios-1SC`, `Helios-1E-lite`, and `Helios-1`.
-- **IBM Quantum Runtime**: `ibm_kingston` through Qiskit Runtime Sampler V2.
+Solving `A x = b` is the inner loop of almost everything in scientific computing:
+structural mechanics, fluid dynamics, circuit simulation, optimization, machine
+learning. This project implements a quantum algorithm for that problem the
+modern way (QSVT, the successor to HHL), verifies it against ordinary linear
+algebra, and then compiles the *same* circuit down to **Quantinuum Helios** and
+**IBM Quantum** processors to see whether today's hardware can reproduce the
+answer.
 
-The central result is that the device experiments reproduce the expected
-post-selected QSVT circuit distribution.  The noiseless target for the hardware
-circuit is **88.1% / 11.9%** on the system qubit after selecting the
-block-encoding ancilla in `|0>`.  The measured post-selected distributions were
-**82.7% / 17.3%** on the Quantinuum noisy emulator, **92.1% / 7.9%** on
-Quantinuum Helios-1 hardware, and **88.6% / 11.4%** on IBM Kingston hardware.
+It can.
 
-![Hardware post-selection results](docs/figures/hardware_postselection.png)
+---
 
-## Abstract
+## The headline result
 
-Solving linear systems `Ax = b` is a computational kernel across scientific
-computing, engineering simulation, optimization, and machine learning.  QSVT
-provides a modern alternative to phase-estimation based linear solvers: instead
-of estimating eigenvalues and rotating an ancilla as in HHL, QSVT directly
-applies a bounded polynomial approximation to `1/x` to a block-encoding of `A`.
-This project implements that pipeline end to end:
+We solve a small but honest system `A x = b` on three quantum backends and
+compare the measured solution to the noiseless prediction. All three recover the
+solution; IBM Kingston lands within **0.5 percentage points** of the ideal.
 
-1. Construct a block-encoding of a Hermitian contraction `A`.
-2. Generate a bounded Chebyshev approximation `P(x) ~= scale / x`.
-3. Use symmetric QSP phase finding to realize `P` as a QSVT sequence.
-4. Apply the encoded matrix function to `|b>`.
-5. Compare against NumPy and HHL in classical simulation.
-6. Compile and execute a minimal hardware instance on Quantinuum and IBM
-   quantum processors.
+![The same solution recovered on three quantum backends](docs/figures/hardware_solution.png)
 
-The implementation is intentionally research-oriented: the primitives are kept
-small enough to audit, the solver is verified numerically, and the hardware
-paths preserve the same circuit semantics so that emulator and QPU results can
-be compared to a single noiseless target.
+> *Read it as: after running the QSVT circuit and post-selecting the helper
+> ("ancilla") qubit, what fraction of shots put the answer qubit in state
+> `|1⟩`? The dashed line is the exact noiseless value; every backend clusters
+> around it.*
 
-## What Was Achieved
+| Backend | Type | Shots | Answer `P(\|1⟩)` | Off the ideal |
+|---|---|---:|---:|---:|
+| Noiseless ideal | statevector | — | 11.9% | — |
+| IBM Kingston | superconducting HW | 1024 | 11.4% | **−0.5 pp** |
+| Quantinuum Helios-1 | trapped-ion HW | 500 | 7.9% | −4.0 pp |
+| Quantinuum Helios-1E-lite | noisy emulator | 100 | 17.3% | +5.5 pp |
 
-| Layer | Achievement | Evidence |
-|---|---:|---|
-| Block encoding | Verified `W_x(A)` unitary dilation and encoded block recovery | Unit tests at `1e-9` tolerance |
-| QSP/QSVT | Verified phase factors and QSVT block operator `P(A)` | Unit tests at `1e-6` to `1e-13` tolerance |
-| Classical linear solve | QSVT recovers `numpy.linalg.solve` on Hermitian, indefinite, and non-Hermitian systems | `pytest` solver suite |
-| HHL comparison | Faithful statevector HHL baseline implemented for real SPD systems | QPE-resolution benchmark |
-| Quantinuum emulator | QSVT circuit executed on `Helios-1E-lite` noisy emulator | 100-shot Qsys result |
-| Quantinuum hardware | QSVT circuit executed on real `Helios-1` hardware | 500-shot Qsys result, 49.61 HQC |
-| IBM hardware | QSVT circuit executed on `ibm_kingston` | 1024-shot Runtime Sampler V2 result |
+(Helios-1's larger gap is partly low statistics — only the 469 post-selected
+shots count — and its ancilla success rate of 93.8% actually matches the ideal
+93.6% almost exactly.)
 
-## Algorithm
+---
 
-For a normalized Hermitian matrix `A_n = A / alpha`, the solver constructs a
-bounded odd polynomial
+## The idea in one picture
+
+QSVT turns matrix inversion into **polynomial approximation**. To apply `A⁻¹`,
+you find a polynomial `P(x)` that behaves like `1/x` on the range of eigenvalues
+you care about, then QSVT applies `P` to a *block-encoding* of `A`. No quantum
+phase estimation, no eigenvalue read-out — just one bounded polynomial.
+
+![QSVT approximates 1/x with a bounded polynomial](docs/figures/qsvt_polynomial.png)
+
+The only constraint is that the polynomial must stay within `±1` everywhere (so
+it fits inside a unitary). The condition number `κ` sets how close to zero you
+need `1/x` to remain accurate, which in turn sets the polynomial's degree —
+roughly `degree ≈ O(κ · log(1/ε))`.
+
+---
+
+## What this project actually builds
+
+Everything is implemented from primitives and checked numerically — nothing is a
+black box you have to trust.
+
+| Layer | What it does | How it's verified |
+|---|---|---|
+| **Block-encoding** (`primitives/block_encoding.py`) | Embeds a matrix `A` inside a larger unitary (dilation + LCU / PREPARE-SELECT) | Unit tests to `1e-9` |
+| **QSP / QSVT** (`primitives/qsp_qsvt.py`) | Bounded `1/x` polynomial, symmetric-QSP phase angles, and the QSVT sequence that realizes `P(A)` | Reconstruction tests to `1e-6`–`1e-13` |
+| **Amplitude amplification** (`primitives/amplitude_amplification.py`) | Boosts the post-selection success probability (Grover + fixed-point) | Unit tests |
+| **QSVT solver** (`solvers/qsvt_linear_solver.py`) | Full `A x = b` solver (Hermitian, indefinite, and non-Hermitian via dilation) | Matches `numpy.linalg.solve` |
+| **HHL baseline** (`solvers/hhl_baseline.py`) | Faithful phase-estimation HHL for an honest comparison | QPE-resolution sweep |
+| **Hardware runners** (`hardware/`) | Compile the circuit to Quantinuum (HUGR/Nexus) and IBM (Qiskit Runtime) and execute it | Real device jobs |
+
+---
+
+## Does it work? Classical validation first
+
+Before touching hardware, the solver is validated in dense simulation on a 4×4
+symmetric positive-definite system, against a faithful HHL baseline.
+
+![Solver accuracy: QSVT vs HHL](docs/figures/solver_convergence.png)
+
+QSVT's accuracy is a smooth dial — turn up the polynomial degree, drive the error
+down exponentially. HHL improves with more phase-estimation qubits but wobbles
+because eigenvalues must land on a discrete frequency grid.
+
+| Solver | Setting | Residual `‖Ax−b‖/‖b‖` | Solution error | Success prob. |
+|---|---|---:|---:|---:|
+| **QSVT** | `ε = 0.01`, degree 549 | `4.8 × 10⁻⁵` | `6.8 × 10⁻⁵` | 0.105 |
+| HHL | 9 clock qubits | `4.4 × 10⁻⁴` | `3.5 × 10⁻⁴` | 0.677 |
+
+QSVT reaches ~10× lower error here; HHL's higher success probability reflects its
+different (eigenvalue-rotation) read-out. Both agree with NumPy.
+
+---
+
+## Running it on real quantum computers
+
+### The test problem
+
+Deliberately tiny, so it fits on hardware today and every number is auditable:
 
 ```text
-P(x) ~= scale / x        for |x| in [1/kappa, 1].
+A = [[0.75, 0.25],          b = |0⟩
+     [0.25, 0.75]]
 ```
 
-Given a block-encoding `U_A` of `A_n`, QSVT transforms the encoded block from
-`A_n` into `P(A_n)`.  Applying this to the normalized right-hand side gives
+The exact solution direction is `x ∝ [0.949, −0.316]` — a **90 / 10** split on
+the answer qubit. The hardware circuit runs the QSVT sequence `Q_Φ` and
+post-selects the block-encoding ancilla on `|0⟩`; the noiseless target for *that
+circuit* is **88.1% / 11.9%** (the full solver's imaginary-part extraction is the
+extra step that recovers the textbook 90/10).
+
+### One circuit, two very different toolchains
+
+The same two-qubit block-encoding + QSVT circuit is sent down two stacks:
+
+- **Quantinuum Helios** — the pytket circuit is lowered to a no-input **HUGR
+  `main()`** and executed through **Nexus**. Escalation: `Helios-1SC` (syntax
+  check) → `Helios-1E-lite` (Nexus-hosted noisy Selene emulator) → `Helios-1`
+  (real trapped-ion hardware).
+- **IBM Quantum** — the same circuit is built in Qiskit (with the block-encoding
+  re-expressed in Qiskit's qubit ordering), transpiled, and submitted via
+  **Qiskit Runtime Sampler V2** to `ibm_kingston`.
+
+### Where the noise shows up
+
+Each device spends most of its shots on the two "answer" outcomes (`00` = `|0⟩`,
+`10` = `|1⟩`); the `01`/`11` outcomes are ancilla leakage — i.e. noise.
+
+![Where each device spends its shots](docs/figures/hardware_joint_counts.png)
+
+The noiseless ideal already has ~6% leakage (the QSVT circuit isn't a perfect
+block-encoding at this degree); the hardware adds a bit more on top. IBM's
+leakage skews toward `11`, Helios-1's stays low and balanced.
+
+### Full hardware summary
+
+| Execution | Shots | Ancilla success | Post-selected `P(\|0⟩)` | Post-selected `P(\|1⟩)` | Δ vs ideal |
+|---|---:|---:|---:|---:|---:|
+| Noiseless ideal | — | 93.6% | 88.1% | 11.9% | — |
+| IBM Kingston (hardware) | 1024 | 92.7% | 88.6% | 11.4% | **+0.5 pp** |
+| Quantinuum Helios-1 (hardware) | 500 | 93.8% | 92.1% | 7.9% | +4.0 pp |
+| Quantinuum Helios-1E-lite (emulator) | 100 | 98.0% | 82.7% | 17.3% | −5.5 pp |
+
+Job IDs and raw counts live in [`docs/results/readme_results.json`](docs/results/readme_results.json)
+and `hardware/ibm_results/`.
+
+---
+
+## How the solver works
+
+For a Hermitian `A`, normalize to `A_n = A / α` so `‖A_n‖ ≤ 1`. Build a bounded
+odd polynomial `P(x) ≈ scale / x` accurate on `|x| ∈ [1/κ, 1]`. Given a
+block-encoding `U_A` of `A_n`, QSVT transforms the encoded block `A_n → P(A_n)`,
+so applying it to `|b⟩` gives
 
 ```text
-P(A_n) |b> ~= scale * A_n^{-1} |b>.
+P(A_n) |b⟩ ≈ scale · A_n⁻¹ |b⟩      ⇒      x ≈ P(A_n) b / (scale · α).
 ```
 
-The classical solution is recovered by undoing the normalization:
+The implementation uses the `W_x` signal convention,
 
 ```text
-x ~= P(A_n) b / (scale * alpha).
+W(x)     = [[x, i·√(1−x²)], [i·√(1−x²), x]]
+S(φ)     = exp(i φ Z)
+U_Φ(x)   = S(φ₀) · Π_k  W(x) · S(φ_k)
 ```
 
-The project uses the `W_x` signal convention:
-
-```text
-W(x) = [[x, i sqrt(1 - x^2)],
-        [i sqrt(1 - x^2), x]]
-
-S(phi) = exp(i phi Z)
-U_Phi(x) = S(phi_0) prod_k W(x) S(phi_k)
-```
-
-The symmetric-QSP phase convention realizes the target polynomial as
-`Im <0|U_Phi(x)|0> = P(x)`.  For the dense statevector solver, the imaginary
-component is extracted exactly by the local QSVT block-operator construction.
-For the current hardware demonstration, the device circuit runs the direct
-`Q_Phi` sequence and post-selects the block-encoding ancilla.  That is why the
-hardware target is the circuit ideal **88.1% / 11.9%**, while the full solver's
-imaginary-part extraction is the step that recovers the textbook 90/10 solution
-direction.
+with **symmetric QSP** phase factors, for which `Im⟨0|U_Φ(x)|0⟩ = P(x)`. The
+dense solver extracts that imaginary part exactly; the current hardware demo runs
+the direct `Q_Φ` sequence and post-selects (hence the 88/12 circuit target).
+Non-Hermitian `A` is handled by the Hermitian dilation `[[0, A], [Aᴴ, 0]]`.
 
 ```mermaid
 flowchart LR
-    A["Matrix A"] --> N["Normalize A / alpha"]
+    A["Matrix A"] --> N["Normalize  A / α"]
     N --> B["W_x block-encoding"]
-    K["kappa, epsilon"] --> P["Bounded 1/x polynomial"]
+    K["κ, ε"] --> P["Bounded 1/x polynomial"]
     P --> Phi["Symmetric QSP phases"]
-    B --> Q["QSVT sequence"]
+    B --> Q["QSVT sequence Q_Φ"]
     Phi --> Q
-    b["Right-hand side |b>"] --> Q
-    Q --> S["Post-select / extract encoded block"]
-    S --> X["Approximate A^{-1} b"]
+    b["RHS |b⟩"] --> Q
+    Q --> S["Post-select / extract block"]
+    S --> X["≈ A⁻¹ b"]
 ```
 
-## Repository Layout
+Phase-factor finding at high degree is the one genuinely hard numerical kernel;
+it is delegated to [`pyqsp`](https://github.com/ichuang/pyqsp)'s symmetric-QSP
+solver, while the block-encoding, QSVT sequence, imaginary-part extraction, and
+solver are all local and tested.
+
+---
+
+## Repository layout
 
 ```text
 primitives/
   block_encoding.py          # unitary dilation + LCU block encodings
   qsp_qsvt.py                # 1/x polynomial, QSP angles, QSVT matrix function
-  amplitude_amplification.py # Grover and fixed-point amplification utilities
+  amplitude_amplification.py # Grover and fixed-point amplification
 solvers/
-  qsvt_linear_solver.py      # QSVT linear solver for Ax=b
+  qsvt_linear_solver.py      # QSVT solver for A x = b
   hhl_baseline.py            # faithful QPE-based HHL baseline
 hardware/
-  quantinuum_runner.py       # pytket -> HUGR -> Nexus / Helios execution
-  run_ibm.py                 # Qiskit -> IBM Runtime Sampler V2 execution
-  ibm_results/               # persisted IBM Runtime job records
+  quantinuum_runner.py       # pytket -> HUGR -> Nexus / Helios
+  run_ibm.py                 # Qiskit -> IBM Runtime Sampler V2
+  ibm_results/               # persisted IBM job records
 docs/
-  generate_readme_figures.py # reproducible README plots
-  figures/                   # generated PNG figures
-  results/readme_results.json
+  generate_readme_figures.py # reproducible figures (reads results JSON)
+  figures/ , results/        # generated PNGs and captured data
 tests/                       # primitive, solver, and hardware-circuit tests
 ```
 
-## Classical Simulation Results
+---
 
-The core solver is first validated without hardware noise.  On a 4x4 symmetric
-positive-definite benchmark, QSVT is compared against a faithful HHL baseline
-that models quantum phase estimation through the exact Dirichlet kernel.
-
-| Solver | Configuration | Relative residual `||Ax-b||/||b||` | Relative solution error | Success probability |
-|---|---:|---:|---:|---:|
-| QSVT | `epsilon=0.01`, degree 549 | `4.76e-05` | `6.77e-05` | `0.105` |
-| HHL | 9 clock qubits | `4.39e-04` | `3.45e-04` | `0.677` |
-
-The QSVT sweep shows smooth improvement as the reciprocal polynomial is refined.
-The HHL curve improves with more phase-estimation resolution, but can move
-non-monotonically at small register sizes because the eigenvalues sit on a
-finite QPE grid.
-
-![Classical solver convergence](docs/figures/solver_convergence.png)
-
-For the sweep plotted above:
-
-| QSVT epsilon | Degree | Residual |
-|---:|---:|---:|
-| `0.300` | 145 | `4.05e-03` |
-| `0.100` | 203 | `6.06e-04` |
-| `0.030` | 265 | `8.36e-05` |
-| `0.010` | 323 | `1.38e-05` |
-| `0.003` | 385 | `2.13e-06` |
-
-| HHL clock qubits | Residual |
-|---:|---:|
-| 4 | `1.41e-02` |
-| 5 | `3.74e-03` |
-| 6 | `4.66e-03` |
-| 7 | `3.94e-04` |
-| 8 | `9.73e-04` |
-| 9 | `5.50e-04` |
-
-## Hardware Demonstration
-
-The hardware problem is a deliberately small, auditable 2x2 system:
-
-```text
-A = [[0.75, 0.25],
-     [0.25, 0.75]],       b = |0>
-```
-
-The exact linear-system solution direction is approximately
-`[0.9487, -0.3162]`, corresponding to a 90/10 system-qubit probability split.
-The device circuit runs the direct `Q_Phi` sequence, whose noiseless post-selected
-target is:
-
-| Quantity | Value |
-|---|---:|
-| Raw system probability `P(0), P(1)` | `85.7%`, `14.3%` |
-| Ancilla success probability `P(ancilla=0)` | `93.6%` |
-| Post-selected system probability given `ancilla=0` | `88.1%`, `11.9%` |
-
-The measured hardware and emulator results below use the same convention for
-joint bitstrings: **`system,ancilla`**.  Therefore the post-selected branch is
-formed from keys ending in `0`: `00` and `10`.
-
-![Measured joint outcomes](docs/figures/hardware_joint_counts.png)
-
-### Quantinuum Results
-
-The Quantinuum path lowers the pytket circuit to a no-input HUGR `main()` and
-executes it through Nexus.
-
-| Stage | Backend | Job ID | Shots | Status | Notes |
-|---|---|---|---:|---|---|
-| Syntax check | `Helios-1SC` | `2ae0ce01-bf67-4747-9379-afed24760fb6` | 100 | Completed | Program validation, no shot results |
-| Noisy emulator | `Helios-1E-lite` / SelenePlus | `65245a1e-20b6-49f3-8265-787684c59298` | 100 | Completed | QSystem-style noisy emulation |
-| Hardware | `Helios-1` | `02e36ce1-cf5b-4510-8f7f-6d9afac3c8bb` | 500 | Completed | Real hardware, 49.61 HQC |
-
-Quantinuum emulator joint counts:
-
-| Bitstring `system,ancilla` | Count | Fraction |
-|---|---:|---:|
-| `00` | 81 | `81.0%` |
-| `10` | 17 | `17.0%` |
-| `01` | 1 | `1.0%` |
-| `11` | 1 | `1.0%` |
-
-Post-selecting `ancilla=0` gives `81/(81+17) = 82.7%` on system `0` and
-`17.3%` on system `1`.
-
-Quantinuum Helios-1 hardware joint counts:
-
-| Bitstring `system,ancilla` | Count | Fraction |
-|---|---:|---:|
-| `00` | 432 | `86.4%` |
-| `10` | 37 | `7.4%` |
-| `01` | 17 | `3.4%` |
-| `11` | 14 | `2.8%` |
-
-Post-selecting `ancilla=0` gives `432/(432+37) = 92.1%` on system `0` and
-`7.9%` on system `1`.
-
-### IBM Quantum Results
-
-The IBM path builds the same two-qubit QSVT circuit in Qiskit, conjugates the
-block-encoding into Qiskit's little-endian qubit ordering, transpiles for the
-selected backend, and submits through Qiskit Runtime Sampler V2.
-
-| Backend | Job ID | Shots | Status |
-|---|---|---:|---|
-| `ibm_kingston` | `d8r3pvekodhs7383v6ag` | 1024 | Completed |
-
-IBM Kingston joint counts:
-
-| Bitstring `system,ancilla` | Count | Fraction |
-|---|---:|---:|
-| `00` | 841 | `82.1%` |
-| `10` | 108 | `10.5%` |
-| `01` | 28 | `2.7%` |
-| `11` | 47 | `4.6%` |
-
-Post-selecting `ancilla=0` gives `841/(841+108) = 88.6%` on system `0` and
-`11.4%` on system `1`, closely matching the noiseless circuit ideal
-`88.1% / 11.9%`.
-
-## Hardware Summary
-
-| Execution | Shots | Ancilla success | Post-selected `P(system=0)` | Post-selected `P(system=1)` | Delta from ideal on `P(system=0)` |
-|---|---:|---:|---:|---:|---:|
-| Noiseless circuit ideal | statevector | `93.6%` | `88.1%` | `11.9%` | `0.0 pp` |
-| Quantinuum Helios-1E-lite | 100 | `98.0%` | `82.7%` | `17.3%` | `-5.5 pp` |
-| Quantinuum Helios-1 | 500 | `93.8%` | `92.1%` | `7.9%` | `+4.0 pp` |
-| IBM Kingston | 1024 | `92.7%` | `88.6%` | `11.4%` | `+0.5 pp` |
-
-The IBM run is the closest match to the noiseless QSVT circuit distribution in
-this shot regime.  The Quantinuum Helios-1 hardware run is also consistent with
-the target within the expected scale of finite-shot and device noise; its
-measured ancilla success probability, `93.8%`, is nearly identical to the
-statevector ideal, `93.6%`.
-
-## Engineering Notes
-
-- The solver supports Hermitian systems directly and non-Hermitian systems by
-  Hermitian dilation.
-- The hardware runners are deliberately separate because Quantinuum and IBM use
-  different compilation/runtime models: HUGR through Nexus for Helios, and
-  Qiskit Runtime Sampler V2 for IBM.
-- Tests include an explicit endian-regression check for the IBM circuit.  This
-  matters because the local QSVT matrix code and pytket use an
-  `ancilla,system` interpretation, while Qiskit count keys display
-  `system,ancilla` for this two-qubit layout.
-- The hardware files do not store credentials.  IBM credentials are read from
-  `IBM_QUANTUM_TOKEN` and `IBM_QUANTUM_CRN`; Quantinuum authentication is handled
-  through the user's Nexus login.
-
-## Reproducing the Project
-
-Create an environment and run the full test suite:
+## Reproduce it
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pytest -q
+pytest -q                        # full numerical test suite
+python docs/generate_readme_figures.py   # rebuild the figures
 ```
 
-Regenerate the figures and summary JSON:
-
-```bash
-python docs/generate_readme_figures.py
-```
-
-Run the QSVT solver from Python:
+Solve a system in three lines:
 
 ```python
 import numpy as np
@@ -309,45 +237,50 @@ A = np.array([[2.0, 0.5], [0.5, 1.5]])
 b = np.array([1.0, 2.0])
 
 res = solve(A, b, epsilon=1e-2)
-print(res.x)
-print(res.residual)
-print(res.degree, res.kappa)
-print(res.success_probability)
+print(res.x)                     # ≈ numpy.linalg.solve(A, b)
+print(res.residual, res.degree, res.kappa)
 ```
 
-Run the IBM hardware path:
+Run on **IBM Quantum** (free-tier account):
 
 ```bash
 export IBM_QUANTUM_TOKEN="..."
 export IBM_QUANTUM_CRN="crn:v1:..."
 
-python -m hardware.run_ibm ideal --matrix-check
 python -m hardware.run_ibm list-backends
 python -m hardware.run_ibm submit --backend ibm_kingston --shots 1024
-python -m hardware.run_ibm status --job-id <job-id> --wait
+python -m hardware.run_ibm status --job-id <job-id>
 ```
 
-Run the Quantinuum path after Nexus login:
+Run on **Quantinuum Helios** (after `qnexus.login()`):
 
 ```python
-import qnexus
-qnexus.login()
-
+import qnexus; qnexus.login()
 from hardware.quantinuum_runner import _demo
 
-runner, hw = _demo()
-runner.hardware_status(hw)
-runner.wait(hw)
+runner, hw = _demo()             # Helios-1SC -> Helios-1E-lite -> submit Helios-1
+runner.wait(hw)                  # collect hardware counts when the job runs
 ```
 
-## Status
+---
 
-The core numerical solver, HHL baseline, QSVT primitive tests, Quantinuum runner,
-IBM runner, result extraction, and README figures are complete.  Natural next
-extensions are larger structured systems, sparse block-encoding strategies,
-explicit imaginary-part hardware extraction, and application-level PDE examples
-in `applications/`.
+## Engineering notes & honest caveats
+
+- **The hardware demo is a 2×2 system.** It proves the full toolchain
+  (block-encoding → QSVT → native compilation → execution → post-selection) on
+  real devices, not large-scale advantage.
+- **Two runners, on purpose.** Quantinuum and IBM have genuinely different
+  execution models (HUGR programs through Nexus vs. Qiskit Runtime primitives),
+  so the runners are kept separate rather than forced behind one abstraction.
+- **Endianness is tested.** The local QSVT code uses an `(ancilla, system)`
+  convention while Qiskit count keys read `(system, ancilla)`; a regression test
+  pins this so the IBM comparison stays correct.
+- **No credentials in the repo.** IBM reads `IBM_QUANTUM_TOKEN` /
+  `IBM_QUANTUM_CRN` from the environment; Quantinuum uses your Nexus login.(if you have an account)
+- **Next steps:** explicit imaginary-part extraction on hardware (to target the
+  true 90/10 directly), larger structured/sparse systems, and the PDE
+  applications sketched in `applications/`.
 
 ## License
 
-MIT.  See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
