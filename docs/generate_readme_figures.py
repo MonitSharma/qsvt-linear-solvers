@@ -247,6 +247,56 @@ def fig_hardware_solution(results: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Figure 3b -- the full post-selected solution distribution (|0> and |1>)
+# --------------------------------------------------------------------------- #
+def fig_solution_distribution(results: dict) -> None:
+    hw = results["hardware"]
+    order = [
+        "Noiseless circuit ideal",
+        "IBM Kingston",
+        "Quantinuum Helios-1",
+        "Quantinuum Helios-1E-lite",
+    ]
+    ideal0 = hw["Noiseless circuit ideal"]["postselected_system_probabilities"]["0"]
+
+    fig, ax = plt.subplots(figsize=(9.8, 4.6))
+    y = np.arange(len(order))[::-1]
+    c0, c1 = "#3b6fd6", "#e8804d"
+
+    for yi, key in zip(y, order):
+        p0 = hw[key]["postselected_system_probabilities"]["0"] * 100
+        p1 = hw[key]["postselected_system_probabilities"]["1"] * 100
+        ax.barh(yi, p0, color=c0, height=0.62, zorder=2)
+        ax.barh(yi, p1, left=p0, color=c1, height=0.62, zorder=2)
+        ax.text(p0 / 2, yi, f"|0⟩  {p0:.1f}%", ha="center", va="center",
+                color="white", fontsize=10.5, fontweight="bold")
+        ax.text(p0 + p1 / 2, yi, f"|1⟩ {p1:.1f}%", ha="center", va="center",
+                color="white", fontsize=9.5, fontweight="bold")
+
+    # ideal |0>/|1> boundary
+    ax.axvline(ideal0 * 100, color=INK, lw=1.8, ls=(0, (5, 3)), zorder=3)
+    ax.text(ideal0 * 100 - 0.8, -0.5, f"ideal split  {ideal0:.1%}",
+            ha="right", va="center", fontsize=9.5, color=INK)
+
+    ax.set_xlim(0, 100)
+    ax.set_ylim(-0.6, len(order) - 0.3)
+    ax.set_yticks(y)
+    ax.set_yticklabels([SHORT[k].replace("\n", " ") for k in order], fontsize=11)
+    ax.set_xlabel("share of post-selected shots (%)")
+    _despine(ax)
+    ax.grid(axis="y", visible=False)
+    _title(
+        ax,
+        "Full recovered solution on each backend",
+        "Each bar is the post-selected answer-qubit state; the dashed line is the "
+        "ideal |0⟩/|1⟩ boundary.",
+    )
+    fig.subplots_adjust(top=0.82)
+    fig.savefig(FIG_DIR / "hardware_distribution.png", bbox_inches="tight")
+    plt.close(fig)
+
+
+# --------------------------------------------------------------------------- #
 # Figure 4 -- where the noise shows up (joint-outcome heatmap)
 # --------------------------------------------------------------------------- #
 def fig_hardware_fidelity(results: dict) -> None:
@@ -320,6 +370,7 @@ def main() -> None:
     fig_polynomial()
     fig_accuracy(results)
     fig_hardware_solution(results)
+    fig_solution_distribution(results)
     fig_hardware_fidelity(results)
     print("wrote figures to", FIG_DIR)
 

@@ -140,6 +140,11 @@ leakage skews toward `11`, Helios-1's stays low and balanced.
 
 ### Full hardware summary
 
+The complete post-selected answer-qubit distribution on each backend, with the
+ideal `|0⟩`/`|1⟩` boundary marked:
+
+![Full recovered solution on each backend](docs/figures/hardware_distribution.png)
+
 | Execution | Shots | Ancilla success | Post-selected `P(\|0⟩)` | Post-selected `P(\|1⟩)` | Δ vs ideal |
 |---|---:|---:|---:|---:|---:|
 | Noiseless ideal | — | 93.6% | 88.1% | 11.9% | — |
